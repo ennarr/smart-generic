@@ -1,0 +1,90 @@
+#!/usr/bin/perl -w
+# Copyright (C) 2009-2011 Glen Pitt-Pladdy
+# Rewritten by Nigel Roberts to use smartd statefiles and drive serial no.
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+#
+#
+# Put SMART parameter ID on command line, prefixed by 'R' if you want raw value
+
+$FILES = '/var/lib/smartmontools';
+
+$param = shift @ARGV;
+if ( $param eq 'devices' ) {
+	$devicelist = 1;
+} elsif ( $param =~ s/^[rR](\d+)$/$1/ ) {
+	$raw = 1;
+} elsif ( $param =~ /^\d+$/ ) {
+	$raw = 0;
+} else {
+	die "FATAL - need the numeric parameter to show\n";
+}
+
+# run through current state files 
+opendir LS, $FILES or die "FATAL - can't list $FILES: $!\n";
+while ( defined ( $file = readdir LS ) ) {
+	if ( $file !~ /smartd.\w+-([\w]+).*state$/ ) { next; }	# find only the files we want
+	$drives{$1}{'filename'} = $file;
+}
+closedir LS;
+
+if ( $devicelist ) {
+	foreach $drive (keys %drives) {
+		print "$drive\n";
+	}
+	exit 0;
+}
+
+foreach $drive (keys %drives) {
+	# deal with missing files
+	if ( ! -f "$FILES/$drives{$drive}{'filename'}" ) {
+		next;
+	}
+	# grab the parameter from the file
+	open DR, "$FILES/$drives{$drive}{'filename'}"
+		or die "FATAL - can't read \"$FILES/$drive{'filename'}\": $!\n";
+	while ( defined ( $line = <DR> ) ) {
+		# look for first id line matching $param
+		if ($line =~ /[\w-]+\.(\d+)\.id\s=\s$param$/ )  {
+			$seq = $1;
+			# we've found the id line, check the following 3-4 lines for the value
+			while ( defined ( $line = <DR> ) and $line =~ /[\w-]+\.$seq\.(\w+)\s+=\s+(\d+)$/ ) {
+				if ($1 eq 'raw' and $raw) {
+					if ($param == 194 || $param == 190) {
+						# special case for raw temperature:
+						# actual temp is the last two bytes
+						# bug: this only works consistently on 64 bit perl
+						# unless you use Math::Int64 (which is slow).
+    						$health = $2 & 0xff;
+					} else {
+						$health = $2;
+					}
+					print "$health\n";
+					next;
+				} elsif ($1 eq 'val' and !$raw) {
+					$health = $2;
+					print "$2\n";
+					next;
+				}
+			}
+			next;
+		}	
+	}
+	close DR;
+	if ( ! defined ( $health ) ) {
+		# didn't get the parameter
+		print "NA\n";
+	}
+}
